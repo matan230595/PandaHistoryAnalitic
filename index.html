@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PandaHistoryAnalitic</title>
+    <meta name="description" content="עיבוד מקומי בדפדפן: העלאת Excel/CSV, חילוץ URLs, כפילויות, סטטיסטיקות, וייצוא." />
+    <meta name="theme-color" content="#0b1220" />
+  </head>
+  <body>
+    <script>
+      try {
+        const t = localStorage.getItem('panda_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch {}
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
