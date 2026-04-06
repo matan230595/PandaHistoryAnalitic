@@ -1,6 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
-import { Chart } from "chart.js/auto";
+// write-excel-file is lazy-loaded only when the user clicks Export Excel
+// to keep it out of the initial bundle (~50 KB saved on first load).
+import {
+  Chart,
+  BarController, BarElement,
+  LineController, LineElement, PointElement,
+  CategoryScale, LinearScale,
+  Tooltip, Legend,
+} from "chart.js";
+
+Chart.register(
+  BarController, BarElement,
+  LineController, LineElement, PointElement,
+  CategoryScale, LinearScale,
+  Tooltip, Legend,
+);
 import {
   Upload, Shield, Download, Trash2, Sparkles,
   Search, Lock, Unlock, FileSpreadsheet, CalendarRange, BarChart3
@@ -8,11 +22,12 @@ import {
 
 const MAX_PREVIEW_ROWS = 200;
 
-const URL_KEYWORDS = ["url","link","uri","href","כתובת","קישור","לינק","כתובת url","כתובת אתר"];
-const DATE_KEYWORDS = ["date","time","visited","visit","timestamp","last visit","first visit","תאריך","זמן","ביקור","כניסה","מועד"];
-
 const APP_TITLE = import.meta.env.VITE_APP_TITLE || "PandaHistoryAnalitic";
-const APP_PASSWORD = String(import.meta.env.VITE_APP_PASSWORD || "panda"); // basic gate
+// If VITE_APP_PASSWORD is not set, the gate is disabled (auto-unlock).
+// Never rely on this as real auth — password is baked into the JS bundle.
+const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD
+  ? String(import.meta.env.VITE_APP_PASSWORD)
+  : null;
 const AUTH_KEY = "panda_auth_ok";
 const THEME_KEY = "panda_theme";
 
@@ -28,95 +43,6 @@ function animateThemeChange(){
   window.setTimeout(() => document.documentElement.classList.remove("theme-anim"), 380);
 }
 
-
-function normalizeHeader(s) {
-  return String(s ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\u200f\u200e]/g, "")
-    .replace(/[\s\-_.:;|/\\]+/g, " ")
-    .trim();
-}
-
-function scoreHeader(header, keywords) {
-  const h = normalizeHeader(header);
-  if (!h) return 0;
-  let score = 0;
-  for (const kw of keywords) {
-    const k = normalizeHeader(kw);
-    if (!k) continue;
-    if (h === k) score += 6;
-    else if (h.includes(k)) score += 3;
-  }
-  return score;
-}
-
-function isLikelyUrl(str) {
-  if (!str) return false;
-  const s = String(str).trim();
-  return /^(https?:\/\/|www\.|[a-z0-9.-]+\.[a-z]{2,})(\/|\?|#|$)/i.test(s);
-}
-
-function canonicalizeUrl(input) {
-  const raw = String(input ?? "").trim().replace(/^"+|"+$/g, "");
-  if (!raw) return null;
-
-  const withProto = raw.match(/^https?:\/\//i) ? raw : `https://${raw}`;
-  try {
-    const u = new URL(withProto);
-    u.hostname = u.hostname.toLowerCase();
-    u.hash = "";
-    if ((u.protocol === "https:" && u.port === "443") || (u.protocol === "http:" && u.port === "80")) u.port = "";
-    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/g, "");
-    return u.toString();
-  } catch {
-    return isLikelyUrl(raw) ? raw : null;
-  }
-}
-
-function getDomain(url) {
-  try { return new URL(url).hostname.replace(/^www\./i, "").toLowerCase(); }
-  catch { return ""; }
-}
-
-// Excel serial date (days since 1899-12-30)
-function excelSerialToDate(serial) {
-  const n = Number(serial);
-  if (!Number.isFinite(n)) return null;
-  const utc = new Date(Date.UTC(1899, 11, 30));
-  utc.setUTCDate(utc.getUTCDate() + Math.floor(n));
-  const frac = n - Math.floor(n);
-  if (frac > 0) {
-    utc.setUTCHours(0, 0, 0, 0);
-    utc.setTime(utc.getTime() + Math.round(frac * 86400000));
-  }
-  return utc;
-}
-
-function toISODate(value) {
-  if (value == null || value === "") return "";
-  if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString();
-  if (typeof value === "number") {
-    const d = excelSerialToDate(value);
-    return d ? d.toISOString() : "";
-  }
-
-  const s = String(value).trim();
-  if (!s) return "";
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return parsed.toISOString();
-
-  // dd/mm/yyyy or dd-mm-yyyy etc.
-  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) {
-    let dd = Number(m[1]), mm = Number(m[2]), yy = Number(m[3]);
-    if (yy < 100) yy = 2000 + yy;
-    const hh = Number(m[4] ?? 0), mi = Number(m[5] ?? 0), ss = Number(m[6] ?? 0);
-    const d = new Date(Date.UTC(yy, mm - 1, dd, hh, mi, ss));
-    return isNaN(d.getTime()) ? "" : d.toISOString();
-  }
-  return "";
-}
 
 function formatDateForCsv(iso) {
   if (!iso) return "";
@@ -143,7 +69,9 @@ function downloadBlob(filename, blob) {
 
 function toCsvWithBom(rows) {
   const escape = (v) => {
-    const s = String(v ?? "");
+    let s = String(v ?? "");
+    // Prevent formula injection: prefix dangerous leading chars with a tab
+    if (/^[=+\-@]/.test(s)) s = "\t" + s;
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
@@ -229,7 +157,12 @@ function buildMonthsForYear(monthEntries, year) {
 }
 
 function safeBaseName(fileName) {
-  return (fileName || "export").replace(/\.[^.]+$/, "");
+  return (fileName || "export")
+    .replace(/\.[^.]+$/, "")          // strip extension
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_") // strip chars illegal in filenames
+    .replace(/^\.+/, "_")             // no leading dots (hidden files)
+    .slice(0, 200)                    // cap length
+    || "export";
 }
 
 function PasswordGate({ onUnlock }) {
@@ -237,6 +170,7 @@ function PasswordGate({ onUnlock }) {
   const [err, setErr] = useState("");
 
   function submit() {
+    if (!APP_PASSWORD) { onUnlock(); return; } // gate disabled
     const ok = val === APP_PASSWORD;
     if (!ok) {
       setErr("סיסמה שגויה.");
@@ -281,10 +215,29 @@ function PasswordGate({ onUnlock }) {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem(AUTH_KEY) === "1");
+  const [authed, setAuthed] = useState(() =>
+    !APP_PASSWORD || sessionStorage.getItem(AUTH_KEY) === "1"
+  );
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || "dark");
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [canInstall, setCanInstall] = useState(false);
+
+  // Persist and apply theme whenever it changes
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  }, [theme]);
+
+  // Capture PWA install prompt
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setCanInstall(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
 
   const [fileName, setFileName] = useState("");
   const [dateMode, setDateMode] = useState("first"); // first | last
@@ -334,6 +287,10 @@ export default function App() {
       return true;
     });
   }, [results, searchText, yearFilter, monthFilter]);
+
+  // Active file-processing worker (terminate on new upload or unmount)
+  const workerRef = useRef(null);
+  useEffect(() => () => workerRef.current?.terminate(), []);
 
   // Charts
   const chartDomainRef = useRef(null);
@@ -422,103 +379,43 @@ export default function App() {
     };
   }, [timeStats, selectedYearForChart]);
 
-  async function handleFile(file) {
+  function handleFile(file) {
     if (!file) return;
+
+    // Terminate any in-progress worker before starting a new one
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+
     setFileName(file.name);
     setStatus({ kind: "loading", msg: "קורא את הקובץ ומנתח נתונים..." });
     setRecords([]);
     setMeta(null);
 
-    try {
-      const ext = (file.name.split(".").pop() || "").toLowerCase();
-      const buf = await file.arrayBuffer();
+    const worker = new Worker(new URL("./fileWorker.js", import.meta.url), { type: "module" });
+    workerRef.current = worker;
 
-      let rows = [];
-      if (ext === "csv") {
-        const text = new TextDecoder("utf-8").decode(buf);
-        const workbook = XLSX.read(text, { type: "string" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
-      } else if (ext === "xlsx" || ext === "xls") {
-        const workbook = XLSX.read(buf, { type: "array", cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
-      } else {
-        throw new Error("פורמט לא נתמך. העלה CSV / XLSX / XLS");
+    worker.onmessage = (e) => {
+      workerRef.current = null;
+      worker.terminate();
+      const { type, records: extracted, meta, message } = e.data;
+      if (type === "error") {
+        setStatus({ kind: "error", msg: message });
+        return;
       }
-
-      if (!rows.length) throw new Error("הקובץ ריק או לא ניתן לקריאה.");
-
-      // Header row: first non-empty row
-      let headerRowIndex = 0;
-      while (headerRowIndex < rows.length && rows[headerRowIndex].every(v => String(v ?? "").trim() === "")) headerRowIndex++;
-
-      const headers = rows[headerRowIndex] || [];
-      const dataRows = rows.slice(headerRowIndex + 1);
-
-      let urlCol = -1, dateCol = -1;
-      let bestUrlScore = 0, bestDateScore = 0;
-
-      headers.forEach((h, idx) => {
-        const us = scoreHeader(h, URL_KEYWORDS);
-        const ds = scoreHeader(h, DATE_KEYWORDS);
-        if (us > bestUrlScore) { bestUrlScore = us; urlCol = idx; }
-        if (ds > bestDateScore) { bestDateScore = ds; dateCol = idx; }
-      });
-
-      const hasUrlCol = urlCol >= 0 && bestUrlScore > 0;
-      const hasDateCol = dateCol >= 0 && bestDateScore > 0;
-
-      let scannedUrls = 0;
-      let invalidUrls = 0;
-      const extracted = [];
-
-      for (const r of dataRows) {
-        let urlCandidate = hasUrlCol ? r[urlCol] : "";
-        let url = canonicalizeUrl(urlCandidate);
-
-        if (!url) {
-          // Scan row for any URL-like cell
-          for (let i = 0; i < r.length; i++) {
-            if (i === urlCol) continue;
-            const v = r[i];
-            if (!isLikelyUrl(v)) continue;
-            const c = canonicalizeUrl(v);
-            if (c) { url = c; break; }
-          }
-        }
-
-        if (!url) { invalidUrls++; continue; }
-        scannedUrls++;
-
-        // Date
-        let iso = "";
-        if (hasDateCol) iso = toISODate(r[dateCol]);
-        if (!iso) {
-          for (let i = 0; i < r.length; i++) {
-            const candidate = toISODate(r[i]);
-            if (candidate) { iso = candidate; break; }
-          }
-        }
-
-        extracted.push({ url, domain: getDomain(url), iso });
-      }
-
       setRecords(extracted);
-      setMeta({
-        headerRowIndex,
-        headers,
-        urlCol: hasUrlCol ? urlCol : null,
-        dateCol: hasDateCol ? dateCol : null,
-        scannedUrls,
-        invalidUrls,
-        records: extracted.length
-      });
-
+      setMeta(meta);
       setStatus({ kind: "ok", msg: `הושלם! נטענו ${extracted.length.toLocaleString()} רשומות.` });
-    } catch (e) {
-      setStatus({ kind: "error", msg: e?.message || "שגיאה לא צפויה" });
-    }
+    };
+
+    worker.onerror = (err) => {
+      workerRef.current = null;
+      worker.terminate();
+      setStatus({ kind: "error", msg: err?.message || "שגיאה לא צפויה" });
+    };
+
+    worker.postMessage({ file });
   }
 
   function onDrop(e) { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }
@@ -544,19 +441,19 @@ export default function App() {
     downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.csv`, blob);
   }
 
-  function exportXlsx() {
-    const col1 = dedupeMode === "domain" ? "Domain" : "URL";
-    const data = [
-      [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
-      ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Export");
-
-    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
+  async function exportXlsx() {
+    try {
+      const { default: writeXlsxFile } = await import("write-excel-file/browser");
+      const col1 = dedupeMode === "domain" ? "Domain" : "URL";
+      const data = [
+        [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
+        ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
+      ];
+      const blob = await writeXlsxFile(data);
+      downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
+    } catch (e) {
+      setStatus({ kind: "error", msg: `שגיאה בייצוא Excel: ${e?.message || "שגיאה לא צפויה"}` });
+    }
   }
 
   function exportJson() {
@@ -565,8 +462,8 @@ export default function App() {
   }
 
 async function installPwa() {
-        if (!deferredPrompt) {
-          alert(
+  if (!deferredPrompt) {
+    alert(
 `התקנה ידנית:
 
 בכרום (מחשב):
@@ -580,14 +477,12 @@ async function installPwa() {
 ב־Safari iPhone:
 1. כפתור שיתוף
 2. הוסף למסך הבית`
-          );
-          return;
-        }
-  if (!deferredPrompt) return;
+    );
+    return;
+  }
   try {
-    deferredPrompt.prompt();
+    await deferredPrompt.prompt();
     const choice = await deferredPrompt.userChoice;
-    // Either way, the prompt can only be used once.
     setDeferredPrompt(null);
     setCanInstall(false);
     setStatus((s) => s.kind === "loading" ? s : { kind: "ok", msg: choice?.outcome === "accepted" ? "האפליקציה הותקנה ✅" : "התקנה בוטלה" });
@@ -631,7 +526,7 @@ async function installPwa() {
             {theme === "dark" ? "☀️ מצב אור" : "🌙 מצב כהה"}
           </button>
           <button className="btn primary installBtn" onClick={installPwa} title="התקן כאפליקציה (PWA)">
-              <Download size={16} style={{ marginLeft: 8 }} /> התקן אפליקציה
+              <Download size={16} style={{ marginLeft: 8 }} /> {canInstall ? "התקן אפליקציה" : "התקנה ידנית"}
             </button>
           <button className="btn danger" onClick={logout} title="התנתק">
             <Unlock size={16} style={{ marginLeft: 8 }} /> התנתק
@@ -642,7 +537,7 @@ async function installPwa() {
       {/* Controls */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span className="badge"><FileSpreadsheet size={14} /> CSV / XLSX / XLS</span>
+          <span className="badge"><FileSpreadsheet size={14} /> CSV / XLSX</span>
           <span className="badge"><CalendarRange size={14} /> ביקור ראשון/אחרון</span>
           <span className="badge"><BarChart3 size={14} /> סטטיסטיקות שנה/חודש</span>
         </div>
@@ -711,7 +606,7 @@ async function installPwa() {
           <div>
             <strong>גרור לכאן קובץ או לחץ להעלאה</strong>
             <div className="small">
-              פורמטים נתמכים: <span className="kbd">.csv</span> <span className="kbd">.xlsx</span> <span className="kbd">.xls</span>
+              פורמטים נתמכים: <span className="kbd">.csv</span> <span className="kbd">.xlsx</span>
             </div>
           </div>
           <div className="kbd">Drop</div>
@@ -720,7 +615,7 @@ async function installPwa() {
         <input
           id="fileInput"
           type="file"
-          accept=".csv,.xlsx,.xls"
+          accept=".csv,.xlsx"
           style={{ display: "none" }}
           onChange={(e) => handleFile(e.target.files?.[0])}
         />
