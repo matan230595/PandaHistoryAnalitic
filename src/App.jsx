@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
+import writeXlsxFile from "write-excel-file/browser";
 import { Chart } from "chart.js/auto";
 import {
   Upload, Shield, Download, Trash2, Sparkles,
@@ -28,6 +28,39 @@ function animateThemeChange(){
   window.setTimeout(() => document.documentElement.classList.remove("theme-anim"), 380);
 }
 
+
+function parseCsvText(text) {
+  const s = text.replace(/^\uFEFF/, ""); // strip BOM
+  const rows = [];
+  let i = 0;
+  const len = s.length;
+  while (i < len) {
+    const row = [];
+    while (i < len && s[i] !== "\n" && s[i] !== "\r") {
+      if (s[i] === '"') {
+        i++;
+        let cell = "";
+        while (i < len) {
+          if (s[i] === '"' && s[i + 1] === '"') { cell += '"'; i += 2; }
+          else if (s[i] === '"') { i++; break; }
+          else cell += s[i++];
+        }
+        row.push(cell);
+        if (i < len && s[i] === ",") i++;
+      } else {
+        let j = i;
+        while (j < len && s[j] !== "," && s[j] !== "\n" && s[j] !== "\r") j++;
+        row.push(s.slice(i, j));
+        i = j;
+        if (i < len && s[i] === ",") i++;
+      }
+    }
+    if (i < len && s[i] === "\r") i++;
+    if (i < len && s[i] === "\n") i++;
+    if (row.length > 0) rows.push(row);
+  }
+  return rows;
+}
 
 function normalizeHeader(s) {
   return String(s ?? "")
@@ -441,103 +474,33 @@ export default function App() {
     };
   }, [timeStats, selectedYearForChart]);
 
-  async function handleFile(file) {
+  function handleFile(file) {
     if (!file) return;
     setFileName(file.name);
     setStatus({ kind: "loading", msg: "קורא את הקובץ ומנתח נתונים..." });
     setRecords([]);
     setMeta(null);
 
-    try {
-      const ext = (file.name.split(".").pop() || "").toLowerCase();
-      const buf = await file.arrayBuffer();
+    const worker = new Worker(new URL("./fileWorker.js", import.meta.url), { type: "module" });
 
-      let rows = [];
-      if (ext === "csv") {
-        const text = new TextDecoder("utf-8").decode(buf);
-        const workbook = XLSX.read(text, { type: "string" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
-      } else if (ext === "xlsx" || ext === "xls") {
-        const workbook = XLSX.read(buf, { type: "array", cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
-      } else {
-        throw new Error("פורמט לא נתמך. העלה CSV / XLSX / XLS");
+    worker.onmessage = (e) => {
+      const { type, records: extracted, meta, message } = e.data;
+      worker.terminate();
+      if (type === "error") {
+        setStatus({ kind: "error", msg: message });
+        return;
       }
-
-      if (!rows.length) throw new Error("הקובץ ריק או לא ניתן לקריאה.");
-
-      // Header row: first non-empty row
-      let headerRowIndex = 0;
-      while (headerRowIndex < rows.length && rows[headerRowIndex].every(v => String(v ?? "").trim() === "")) headerRowIndex++;
-
-      const headers = rows[headerRowIndex] || [];
-      const dataRows = rows.slice(headerRowIndex + 1);
-
-      let urlCol = -1, dateCol = -1;
-      let bestUrlScore = 0, bestDateScore = 0;
-
-      headers.forEach((h, idx) => {
-        const us = scoreHeader(h, URL_KEYWORDS);
-        const ds = scoreHeader(h, DATE_KEYWORDS);
-        if (us > bestUrlScore) { bestUrlScore = us; urlCol = idx; }
-        if (ds > bestDateScore) { bestDateScore = ds; dateCol = idx; }
-      });
-
-      const hasUrlCol = urlCol >= 0 && bestUrlScore > 0;
-      const hasDateCol = dateCol >= 0 && bestDateScore > 0;
-
-      let scannedUrls = 0;
-      let invalidUrls = 0;
-      const extracted = [];
-
-      for (const r of dataRows) {
-        let urlCandidate = hasUrlCol ? r[urlCol] : "";
-        let url = canonicalizeUrl(urlCandidate);
-
-        if (!url) {
-          // Scan row for any URL-like cell
-          for (let i = 0; i < r.length; i++) {
-            if (i === urlCol) continue;
-            const v = r[i];
-            if (!isLikelyUrl(v)) continue;
-            const c = canonicalizeUrl(v);
-            if (c) { url = c; break; }
-          }
-        }
-
-        if (!url) { invalidUrls++; continue; }
-        scannedUrls++;
-
-        // Date
-        let iso = "";
-        if (hasDateCol) iso = toISODate(r[dateCol]);
-        if (!iso) {
-          for (let i = 0; i < r.length; i++) {
-            const candidate = toISODate(r[i]);
-            if (candidate) { iso = candidate; break; }
-          }
-        }
-
-        extracted.push({ url, domain: getDomain(url), iso });
-      }
-
       setRecords(extracted);
-      setMeta({
-        headerRowIndex,
-        headers,
-        urlCol: hasUrlCol ? urlCol : null,
-        dateCol: hasDateCol ? dateCol : null,
-        scannedUrls,
-        invalidUrls,
-        records: extracted.length
-      });
-
+      setMeta(meta);
       setStatus({ kind: "ok", msg: `הושלם! נטענו ${extracted.length.toLocaleString()} רשומות.` });
-    } catch (e) {
-      setStatus({ kind: "error", msg: e?.message || "שגיאה לא צפויה" });
-    }
+    };
+
+    worker.onerror = (err) => {
+      worker.terminate();
+      setStatus({ kind: "error", msg: err?.message || "שגיאה לא צפויה" });
+    };
+
+    worker.postMessage({ file });
   }
 
   function onDrop(e) { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }
@@ -563,18 +526,13 @@ export default function App() {
     downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.csv`, blob);
   }
 
-  function exportXlsx() {
+  async function exportXlsx() {
     const col1 = dedupeMode === "domain" ? "Domain" : "URL";
     const data = [
       [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
       ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
     ];
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Export");
-
-    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const blob = await writeXlsxFile(data);
     downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
   }
 
@@ -659,7 +617,7 @@ async function installPwa() {
       {/* Controls */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span className="badge"><FileSpreadsheet size={14} /> CSV / XLSX / XLS</span>
+          <span className="badge"><FileSpreadsheet size={14} /> CSV / XLSX</span>
           <span className="badge"><CalendarRange size={14} /> ביקור ראשון/אחרון</span>
           <span className="badge"><BarChart3 size={14} /> סטטיסטיקות שנה/חודש</span>
         </div>
@@ -728,7 +686,7 @@ async function installPwa() {
           <div>
             <strong>גרור לכאן קובץ או לחץ להעלאה</strong>
             <div className="small">
-              פורמטים נתמכים: <span className="kbd">.csv</span> <span className="kbd">.xlsx</span> <span className="kbd">.xls</span>
+              פורמטים נתמכים: <span className="kbd">.csv</span> <span className="kbd">.xlsx</span>
             </div>
           </div>
           <div className="kbd">Drop</div>
@@ -737,7 +695,7 @@ async function installPwa() {
         <input
           id="fileInput"
           type="file"
-          accept=".csv,.xlsx,.xls"
+          accept=".csv,.xlsx"
           style={{ display: "none" }}
           onChange={(e) => handleFile(e.target.files?.[0])}
         />
