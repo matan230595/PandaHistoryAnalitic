@@ -143,7 +143,9 @@ function downloadBlob(filename, blob) {
 
 function toCsvWithBom(rows) {
   const escape = (v) => {
-    const s = String(v ?? "");
+    let s = String(v ?? "");
+    // Prevent formula injection: prefix dangerous leading chars with a tab
+    if (/^[=+\-@]/.test(s)) s = "\t" + s;
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
@@ -285,6 +287,23 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || "dark");
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [canInstall, setCanInstall] = useState(false);
+
+  // Persist and apply theme whenever it changes
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  }, [theme]);
+
+  // Capture PWA install prompt
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setCanInstall(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
 
   const [fileName, setFileName] = useState("");
   const [dateMode, setDateMode] = useState("first"); // first | last
@@ -565,8 +584,8 @@ export default function App() {
   }
 
 async function installPwa() {
-        if (!deferredPrompt) {
-          alert(
+  if (!deferredPrompt) {
+    alert(
 `התקנה ידנית:
 
 בכרום (מחשב):
@@ -580,14 +599,12 @@ async function installPwa() {
 ב־Safari iPhone:
 1. כפתור שיתוף
 2. הוסף למסך הבית`
-          );
-          return;
-        }
-  if (!deferredPrompt) return;
+    );
+    return;
+  }
   try {
     deferredPrompt.prompt();
     const choice = await deferredPrompt.userChoice;
-    // Either way, the prompt can only be used once.
     setDeferredPrompt(null);
     setCanInstall(false);
     setStatus((s) => s.kind === "loading" ? s : { kind: "ok", msg: choice?.outcome === "accepted" ? "האפליקציה הותקנה ✅" : "התקנה בוטלה" });
@@ -631,7 +648,7 @@ async function installPwa() {
             {theme === "dark" ? "☀️ מצב אור" : "🌙 מצב כהה"}
           </button>
           <button className="btn primary installBtn" onClick={installPwa} title="התקן כאפליקציה (PWA)">
-              <Download size={16} style={{ marginLeft: 8 }} /> התקן אפליקציה
+              <Download size={16} style={{ marginLeft: 8 }} /> {canInstall ? "התקן אפליקציה" : "התקנה ידנית"}
             </button>
           <button className="btn danger" onClick={logout} title="התנתק">
             <Unlock size={16} style={{ marginLeft: 8 }} /> התנתק

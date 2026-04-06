@@ -187,7 +187,10 @@ Configured via `vite-plugin-pwa` in `vite.config.js`:
 
 - The password gate (`PasswordGate` component) is **client-side only** — it is not real authentication. Do not use it to protect sensitive data in production.
 - All file processing happens in the browser; no data is sent to any server.
-- When modifying file parsing logic, be careful to avoid path traversal or arbitrary code execution via malicious file content (the xlsx library parses in sandboxed JS, but formula injection in CSV is a risk for downstream Excel users — consider sanitizing cell values that start with `=`, `+`, `-`, `@`).
+- **CSV formula injection** is mitigated: `toCsvWithBom` prefixes cells starting with `=`, `+`, `-`, `@` with a tab character to prevent Excel from treating them as formulas.
+- **`xlsx` (SheetJS) vulnerability**: The community version (`^0.18.5`) has known prototype pollution and ReDoS vulnerabilities (GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9). There is no npm fix available — SheetJS moved to a commercial model. Risk is mitigated by the fact that this is a client-side-only app where users parse their own files. If switching libraries, consider `exceljs` as an alternative.
+- **Dev dependency vulnerabilities**: `esbuild`/`vite` (GHSA-67mh-4wv8-2f99) and `serialize-javascript` via `workbox-build` are dev-only and do not affect the production bundle. Fixing them requires `npm audit fix --force` which installs breaking changes (Vite 8, vite-plugin-pwa 1.x).
+- **`VITE_APP_PASSWORD` is baked into the JS bundle** — anyone who opens DevTools can read it. It is intentionally a lightweight gate only.
 
 ---
 
@@ -197,6 +200,17 @@ Configured via `vite-plugin-pwa` in `vite.config.js`:
 - The HTML document has `lang="he"` and `dir="rtl"`.
 - When adding new UI text, write it in Hebrew and ensure it respects RTL layout.
 - Date formatting convention in the UI: `dd/mm/yyyy`.
+
+---
+
+## Known Issues / Tech Debt
+
+| Issue | Severity | Notes |
+|---|---|---|
+| `xlsx` CVEs (prototype pollution, ReDoS) | Medium | No npm fix; community edition abandoned. Consider `exceljs`. |
+| File processing on main thread | Low | Large files (>50K rows) may freeze UI. Future: Web Worker. |
+| `esbuild`/`serialize-javascript` CVEs | Low | Dev-only, no production impact. Fix requires breaking Vite upgrade. |
+| No CI/CD pipeline | Low | Deploys are manual via Vercel UI. |
 
 ---
 
