@@ -8,9 +8,6 @@ import {
 
 const MAX_PREVIEW_ROWS = 200;
 
-const URL_KEYWORDS = ["url","link","uri","href","כתובת","קישור","לינק","כתובת url","כתובת אתר"];
-const DATE_KEYWORDS = ["date","time","visited","visit","timestamp","last visit","first visit","תאריך","זמן","ביקור","כניסה","מועד"];
-
 const APP_TITLE = import.meta.env.VITE_APP_TITLE || "PandaHistoryAnalitic";
 const APP_PASSWORD = String(import.meta.env.VITE_APP_PASSWORD || "panda"); // basic gate
 const AUTH_KEY = "panda_auth_ok";
@@ -28,128 +25,6 @@ function animateThemeChange(){
   window.setTimeout(() => document.documentElement.classList.remove("theme-anim"), 380);
 }
 
-
-function parseCsvText(text) {
-  const s = text.replace(/^\uFEFF/, ""); // strip BOM
-  const rows = [];
-  let i = 0;
-  const len = s.length;
-  while (i < len) {
-    const row = [];
-    while (i < len && s[i] !== "\n" && s[i] !== "\r") {
-      if (s[i] === '"') {
-        i++;
-        let cell = "";
-        while (i < len) {
-          if (s[i] === '"' && s[i + 1] === '"') { cell += '"'; i += 2; }
-          else if (s[i] === '"') { i++; break; }
-          else cell += s[i++];
-        }
-        row.push(cell);
-        if (i < len && s[i] === ",") i++;
-      } else {
-        let j = i;
-        while (j < len && s[j] !== "," && s[j] !== "\n" && s[j] !== "\r") j++;
-        row.push(s.slice(i, j));
-        i = j;
-        if (i < len && s[i] === ",") i++;
-      }
-    }
-    if (i < len && s[i] === "\r") i++;
-    if (i < len && s[i] === "\n") i++;
-    if (row.length > 0) rows.push(row);
-  }
-  return rows;
-}
-
-function normalizeHeader(s) {
-  return String(s ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\u200f\u200e]/g, "")
-    .replace(/[\s\-_.:;|/\\]+/g, " ")
-    .trim();
-}
-
-function scoreHeader(header, keywords) {
-  const h = normalizeHeader(header);
-  if (!h) return 0;
-  let score = 0;
-  for (const kw of keywords) {
-    const k = normalizeHeader(kw);
-    if (!k) continue;
-    if (h === k) score += 6;
-    else if (h.includes(k)) score += 3;
-  }
-  return score;
-}
-
-function isLikelyUrl(str) {
-  if (!str) return false;
-  const s = String(str).trim();
-  return /^(https?:\/\/|www\.|[a-z0-9.-]+\.[a-z]{2,})(\/|\?|#|$)/i.test(s);
-}
-
-function canonicalizeUrl(input) {
-  const raw = String(input ?? "").trim().replace(/^"+|"+$/g, "");
-  if (!raw) return null;
-
-  const withProto = raw.match(/^https?:\/\//i) ? raw : `https://${raw}`;
-  try {
-    const u = new URL(withProto);
-    u.hostname = u.hostname.toLowerCase();
-    u.hash = "";
-    if ((u.protocol === "https:" && u.port === "443") || (u.protocol === "http:" && u.port === "80")) u.port = "";
-    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/g, "");
-    return u.toString();
-  } catch {
-    return isLikelyUrl(raw) ? raw : null;
-  }
-}
-
-function getDomain(url) {
-  try { return new URL(url).hostname.replace(/^www\./i, "").toLowerCase(); }
-  catch { return ""; }
-}
-
-// Excel serial date (days since 1899-12-30)
-function excelSerialToDate(serial) {
-  const n = Number(serial);
-  if (!Number.isFinite(n)) return null;
-  const utc = new Date(Date.UTC(1899, 11, 30));
-  utc.setUTCDate(utc.getUTCDate() + Math.floor(n));
-  const frac = n - Math.floor(n);
-  if (frac > 0) {
-    utc.setUTCHours(0, 0, 0, 0);
-    utc.setTime(utc.getTime() + Math.round(frac * 86400000));
-  }
-  return utc;
-}
-
-function toISODate(value) {
-  if (value == null || value === "") return "";
-  if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString();
-  if (typeof value === "number") {
-    const d = excelSerialToDate(value);
-    return d ? d.toISOString() : "";
-  }
-
-  const s = String(value).trim();
-  if (!s) return "";
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return parsed.toISOString();
-
-  // dd/mm/yyyy or dd-mm-yyyy etc.
-  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) {
-    let dd = Number(m[1]), mm = Number(m[2]), yy = Number(m[3]);
-    if (yy < 100) yy = 2000 + yy;
-    const hh = Number(m[4] ?? 0), mi = Number(m[5] ?? 0), ss = Number(m[6] ?? 0);
-    const d = new Date(Date.UTC(yy, mm - 1, dd, hh, mi, ss));
-    return isNaN(d.getTime()) ? "" : d.toISOString();
-  }
-  return "";
-}
 
 function formatDateForCsv(iso) {
   if (!iso) return "";
@@ -387,6 +262,10 @@ export default function App() {
     });
   }, [results, searchText, yearFilter, monthFilter]);
 
+  // Active file-processing worker (terminate on new upload or unmount)
+  const workerRef = useRef(null);
+  useEffect(() => () => workerRef.current?.terminate(), []);
+
   // Charts
   const chartDomainRef = useRef(null);
   const canvasDomainRef = useRef(null);
@@ -476,16 +355,25 @@ export default function App() {
 
   function handleFile(file) {
     if (!file) return;
+
+    // Terminate any in-progress worker before starting a new one
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+
     setFileName(file.name);
     setStatus({ kind: "loading", msg: "קורא את הקובץ ומנתח נתונים..." });
     setRecords([]);
     setMeta(null);
 
     const worker = new Worker(new URL("./fileWorker.js", import.meta.url), { type: "module" });
+    workerRef.current = worker;
 
     worker.onmessage = (e) => {
-      const { type, records: extracted, meta, message } = e.data;
+      workerRef.current = null;
       worker.terminate();
+      const { type, records: extracted, meta, message } = e.data;
       if (type === "error") {
         setStatus({ kind: "error", msg: message });
         return;
@@ -496,6 +384,7 @@ export default function App() {
     };
 
     worker.onerror = (err) => {
+      workerRef.current = null;
       worker.terminate();
       setStatus({ kind: "error", msg: err?.message || "שגיאה לא צפויה" });
     };
@@ -527,13 +416,17 @@ export default function App() {
   }
 
   async function exportXlsx() {
-    const col1 = dedupeMode === "domain" ? "Domain" : "URL";
-    const data = [
-      [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
-      ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
-    ];
-    const blob = await writeXlsxFile(data);
-    downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
+    try {
+      const col1 = dedupeMode === "domain" ? "Domain" : "URL";
+      const data = [
+        [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
+        ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
+      ];
+      const blob = await writeXlsxFile(data);
+      downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
+    } catch (e) {
+      setStatus({ kind: "error", msg: `שגיאה בייצוא Excel: ${e?.message || "שגיאה לא צפויה"}` });
+    }
   }
 
   function exportJson() {
@@ -561,7 +454,7 @@ async function installPwa() {
     return;
   }
   try {
-    deferredPrompt.prompt();
+    await deferredPrompt.prompt();
     const choice = await deferredPrompt.userChoice;
     setDeferredPrompt(null);
     setCanInstall(false);

@@ -132,8 +132,9 @@ self.onmessage = async (e) => {
       const text = await file.text();
       rows = parseCsvText(text);
     } else if (ext === "xlsx") {
-      rows = await readXlsxFile(file);
-      rows = rows.map(r => r.map(v => (v === null || v === undefined) ? "" : v));
+      const raw = await readXlsxFile(file);
+      if (!raw) throw new Error("לא ניתן לקרוא את הקובץ (תוצאה ריקה).");
+      rows = raw.map(r => r.map(v => (v === null || v === undefined) ? "" : v));
     } else {
       throw new Error("פורמט לא נתמך. העלה CSV או XLSX");
     }
