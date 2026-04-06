@@ -9,7 +9,11 @@ import {
 const MAX_PREVIEW_ROWS = 200;
 
 const APP_TITLE = import.meta.env.VITE_APP_TITLE || "PandaHistoryAnalitic";
-const APP_PASSWORD = String(import.meta.env.VITE_APP_PASSWORD || "panda"); // basic gate
+// If VITE_APP_PASSWORD is not set, the gate is disabled (auto-unlock).
+// Never rely on this as real auth — password is baked into the JS bundle.
+const APP_PASSWORD = import.meta.env.VITE_APP_PASSWORD
+  ? String(import.meta.env.VITE_APP_PASSWORD)
+  : null;
 const AUTH_KEY = "panda_auth_ok";
 const THEME_KEY = "panda_theme";
 
@@ -139,7 +143,12 @@ function buildMonthsForYear(monthEntries, year) {
 }
 
 function safeBaseName(fileName) {
-  return (fileName || "export").replace(/\.[^.]+$/, "");
+  return (fileName || "export")
+    .replace(/\.[^.]+$/, "")          // strip extension
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_") // strip chars illegal in filenames
+    .replace(/^\.+/, "_")             // no leading dots (hidden files)
+    .slice(0, 200)                    // cap length
+    || "export";
 }
 
 function PasswordGate({ onUnlock }) {
@@ -147,6 +156,7 @@ function PasswordGate({ onUnlock }) {
   const [err, setErr] = useState("");
 
   function submit() {
+    if (!APP_PASSWORD) { onUnlock(); return; } // gate disabled
     const ok = val === APP_PASSWORD;
     if (!ok) {
       setErr("סיסמה שגויה.");
@@ -191,7 +201,9 @@ function PasswordGate({ onUnlock }) {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem(AUTH_KEY) === "1");
+  const [authed, setAuthed] = useState(() =>
+    !APP_PASSWORD || sessionStorage.getItem(AUTH_KEY) === "1"
+  );
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || "dark");
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [canInstall, setCanInstall] = useState(false);

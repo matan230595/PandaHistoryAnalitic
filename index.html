@@ -6,14 +6,21 @@
     <title>PandaHistoryAnalitic</title>
     <meta name="description" content="עיבוד מקומי בדפדפן: העלאת Excel/CSV, חילוץ URLs, כפילויות, סטטיסטיקות, וייצוא." />
     <meta name="theme-color" content="#0b1220" />
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src  'self';
+      style-src   'self' 'unsafe-inline';
+      img-src     'self' data: blob:;
+      worker-src  'self' blob:;
+      connect-src 'self';
+      object-src  'none';
+      base-uri    'self';
+      form-action 'self';
+      manifest-src 'self';
+    " />
   </head>
   <body>
-    <script>
-      try {
-        const t = localStorage.getItem('panda_theme') || 'dark';
-        document.documentElement.setAttribute('data-theme', t);
-      } catch {}
-    </script>
+    <script src="/theme-init.js"></script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
