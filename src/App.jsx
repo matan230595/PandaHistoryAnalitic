@@ -1,6 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import writeXlsxFile from "write-excel-file/browser";
-import { Chart } from "chart.js/auto";
+// write-excel-file is lazy-loaded only when the user clicks Export Excel
+// to keep it out of the initial bundle (~50 KB saved on first load).
+import {
+  Chart,
+  BarController, BarElement,
+  LineController, LineElement, PointElement,
+  CategoryScale, LinearScale,
+  Tooltip, Legend,
+} from "chart.js";
+
+Chart.register(
+  BarController, BarElement,
+  LineController, LineElement, PointElement,
+  CategoryScale, LinearScale,
+  Tooltip, Legend,
+);
 import {
   Upload, Shield, Download, Trash2, Sparkles,
   Search, Lock, Unlock, FileSpreadsheet, CalendarRange, BarChart3
@@ -429,6 +443,7 @@ export default function App() {
 
   async function exportXlsx() {
     try {
+      const { default: writeXlsxFile } = await import("write-excel-file/browser");
       const col1 = dedupeMode === "domain" ? "Domain" : "URL";
       const data = [
         [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
