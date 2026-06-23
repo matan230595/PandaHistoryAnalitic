@@ -7,6 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: 'script-defer',
       manifest: {
         name: 'PandaHistoryAnalitic',
         short_name: 'PandaHistory',

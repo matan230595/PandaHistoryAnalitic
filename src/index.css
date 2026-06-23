@@ -255,3 +255,41 @@ html[data-theme="light"] th, body[data-theme="light"] th{
   background: rgba(2,6,23,.04);
 }
 
+/* Floating scroll-to-top button */
+.cornerPanda {
+  position: fixed;
+  bottom: 24px;
+  inset-inline-end: 24px;
+  z-index: 100;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,.35);
+  backdrop-filter: blur(6px);
+  font-size: 22px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform .12s ease, background .15s ease;
+}
+.cornerPanda:hover { transform: scale(1.12); background: rgba(0,0,0,.55); }
+.cornerPanda:active { transform: scale(0.96); }
+
+/* Theme-change flash animation */
+@keyframes themeFlash {
+  from { opacity: 0.65; }
+  to   { opacity: 1; }
+}
+.theme-anim { animation: themeFlash 0.38s ease-out; }
+
+/* Drop zone keyboard focus ring */
+.drop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.drop:hover {
+  border-color: rgba(255,255,255,.38);
+  background: rgba(0,0,0,.18);
+}
+

@@ -79,12 +79,11 @@ function toCsvWithBom(rows) {
   return "\ufeff" + csv;
 }
 
-function buildDomainStats(urls) {
+function buildDomainStats(records) {
   const map = new Map();
-  for (const u of urls) {
-    const host = getDomain(u);
-    if (!host) continue;
-    map.set(host, (map.get(host) || 0) + 1);
+  for (const r of records) {
+    if (!r.domain) continue;
+    map.set(r.domain, (map.get(r.domain) || 0) + 1);
   }
   return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
 }
@@ -201,7 +200,7 @@ function PasswordGate({ onUnlock }) {
             onKeyDown={(e) => e.key === "Enter" && submit()}
           />
           <button className="btn primary" onClick={submit}>
-            <Unlock size={16} style={{ marginLeft: 8 }} /> כניסה
+            <Unlock size={16} style={{ marginInlineEnd: 8 }} /> כניסה
           </button>
         </div>
 
@@ -255,7 +254,7 @@ export default function App() {
 
   // Derived
   const results = useMemo(() => aggregate(records, dedupeMode, dateMode), [records, dedupeMode, dateMode]);
-  const domainTop10 = useMemo(() => buildDomainStats(records.map(r => r.url)), [records]);
+  const domainTop10 = useMemo(() => buildDomainStats(records), [records]);
   const timeStats = useMemo(() => computeTimeStats(records), [records]);
 
   const availableYears = useMemo(() => {
@@ -290,7 +289,10 @@ export default function App() {
 
   // Active file-processing worker (terminate on new upload or unmount)
   const workerRef = useRef(null);
-  useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => () => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+  }, []);
 
   // Charts
   const chartDomainRef = useRef(null);
@@ -397,19 +399,21 @@ export default function App() {
     workerRef.current = worker;
 
     worker.onmessage = (e) => {
+      if (workerRef.current !== worker) return; // stale: superseded by newer upload or unmount
       workerRef.current = null;
       worker.terminate();
-      const { type, records: extracted, meta, message } = e.data;
+      const { type, records: extracted, meta: workerMeta, message } = e.data;
       if (type === "error") {
         setStatus({ kind: "error", msg: message });
         return;
       }
       setRecords(extracted);
-      setMeta(meta);
+      setMeta(workerMeta);
       setStatus({ kind: "ok", msg: `הושלם! נטענו ${extracted.length.toLocaleString()} רשומות.` });
     };
 
     worker.onerror = (err) => {
+      if (workerRef.current !== worker) return; // stale
       workerRef.current = null;
       worker.terminate();
       setStatus({ kind: "error", msg: err?.message || "שגיאה לא צפויה" });
@@ -422,6 +426,8 @@ export default function App() {
   function onPick() { document.getElementById("fileInput")?.click(); }
 
   function resetAll() {
+    workerRef.current?.terminate();
+    workerRef.current = null;
     setFileName("");
     setRecords([]);
     setMeta(null);
@@ -429,6 +435,7 @@ export default function App() {
     setSearchText("");
     setYearFilter("all");
     setMonthFilter("all");
+    setPreviewCount(MAX_PREVIEW_ROWS);
     const el = document.getElementById("fileInput");
     if (el) el.value = "";
   }
@@ -445,11 +452,12 @@ export default function App() {
     try {
       const { default: writeXlsxFile } = await import("write-excel-file/browser");
       const col1 = dedupeMode === "domain" ? "Domain" : "URL";
-      const data = [
-        [col1, "תאריך (ISO)", "תאריך (תצוגה)"],
-        ...filteredResults.map(r => [r.value, r.dateIso || "", formatDateForCsv(r.dateIso)])
+      const schema = [
+        { column: col1,            type: String, value: (r) => r.value || "" },
+        { column: "תאריך (ISO)",   type: String, value: (r) => r.dateIso || "" },
+        { column: "תאריך (תצוגה)", type: String, value: (r) => formatDateForCsv(r.dateIso) },
       ];
-      const blob = await writeXlsxFile(data);
+      const blob = await writeXlsxFile(filteredResults, { schema });
       downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.xlsx`, blob);
     } catch (e) {
       setStatus({ kind: "error", msg: `שגיאה בייצוא Excel: ${e?.message || "שגיאה לא צפויה"}` });
@@ -461,38 +469,26 @@ export default function App() {
     downloadBlob(`${safeBaseName(fileName)}_${dedupeMode === "domain" ? "unique_domains" : "unique_urls"}.json`, blob);
   }
 
-async function installPwa() {
-  if (!deferredPrompt) {
-    alert(
-`התקנה ידנית:
-
-בכרום (מחשב):
-1. לחץ על ⋮
-2. בחר "התקן PandaHistoryAnalitic"
-
-בכרום אנדרואיד:
-1. ⋮
-2. הוסף למסך הבית
-
-ב־Safari iPhone:
-1. כפתור שיתוף
-2. הוסף למסך הבית`
-    );
-    return;
+  async function installPwa() {
+    if (!deferredPrompt) {
+      setStatus({ kind: "ok", msg: "להתקנה ידנית: Chrome ← ⋮ ← 'התקן PandaHistoryAnalitic' | Safari iPhone ← כפתור שיתוף ← הוסף למסך הבית" });
+      return;
+    }
+    try {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      setDeferredPrompt(null);
+      setCanInstall(false);
+      setStatus((s) => s.kind === "loading" ? s : { kind: "ok", msg: choice?.outcome === "accepted" ? "האפליקציה הותקנה ✅" : "התקנה בוטלה" });
+    } catch {
+      setStatus({ kind: "error", msg: "לא ניתן להציג חלון התקנה כרגע." });
+    }
   }
-  try {
-    await deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
-    setDeferredPrompt(null);
-    setCanInstall(false);
-    setStatus((s) => s.kind === "loading" ? s : { kind: "ok", msg: choice?.outcome === "accepted" ? "האפליקציה הותקנה ✅" : "התקנה בוטלה" });
-  } catch {
-    setStatus({ kind: "error", msg: "לא ניתן להציג חלון התקנה כרגע." });
-  }
-}
 
 
   function logout() {
+    workerRef.current?.terminate();
+    workerRef.current = null;
     sessionStorage.removeItem(AUTH_KEY);
     setAuthed(false);
   }
@@ -506,12 +502,12 @@ async function installPwa() {
       {/* Header */}
       <div className="header">
         <div className="brand">
-          <div className="brandLogo" title="Panda">
+          <div className="brandLogo" title="פנדה">
             <span style={{ fontSize: 22 }}>🐼</span>
           </div>
           <div className="brandTitle">
             <h1>{APP_TITLE}</h1>
-            <p>Local • Private • Panda-branded</p>
+            <p>מקומי • פרטי • בטוח</p>
           </div>
         </div>
 
@@ -525,11 +521,11 @@ async function installPwa() {
           >
             {theme === "dark" ? "☀️ מצב אור" : "🌙 מצב כהה"}
           </button>
-          <button className="btn primary installBtn" onClick={installPwa} title="התקן כאפליקציה (PWA)">
-              <Download size={16} style={{ marginLeft: 8 }} /> {canInstall ? "התקן אפליקציה" : "התקנה ידנית"}
+          <button className="btn primary" onClick={installPwa} title="התקן כאפליקציה (PWA)">
+              <Download size={16} style={{ marginInlineEnd: 8 }} /> {canInstall ? "התקן אפליקציה" : "התקנה ידנית"}
             </button>
           <button className="btn danger" onClick={logout} title="התנתק">
-            <Unlock size={16} style={{ marginLeft: 8 }} /> התנתק
+            <Unlock size={16} style={{ marginInlineEnd: 8 }} /> התנתק
           </button>
         </div>
       </div>
@@ -544,7 +540,7 @@ async function installPwa() {
 
         <div className="row">
           <button className="btn primary" onClick={onPick}>
-            <Upload size={16} style={{ marginLeft: 8 }} /> העלאת קובץ
+            <Upload size={16} style={{ marginInlineEnd: 8 }} /> העלאת קובץ
           </button>
 
           <label className="badge" style={{ gap: 8 }}>
@@ -580,16 +576,16 @@ async function installPwa() {
           {filteredResults.length > 0 && (
             <>
               <button className="btn good" onClick={exportXlsx}>
-                <Download size={16} style={{ marginLeft: 8 }} /> ייצוא Excel
+                <Download size={16} style={{ marginInlineEnd: 8 }} /> ייצוא Excel
               </button>
               <button className="btn" onClick={exportCsv}>
-                <Download size={16} style={{ marginLeft: 8 }} /> ייצוא CSV
+                <Download size={16} style={{ marginInlineEnd: 8 }} /> ייצוא CSV
               </button>
               <button className="btn" onClick={exportJson}>
-                <Download size={16} style={{ marginLeft: 8 }} /> ייצוא JSON
+                <Download size={16} style={{ marginInlineEnd: 8 }} /> ייצוא JSON
               </button>
               <button className="btn danger" onClick={resetAll}>
-                <Trash2 size={16} style={{ marginLeft: 8 }} /> ניקוי
+                <Trash2 size={16} style={{ marginInlineEnd: 8 }} /> ניקוי
               </button>
             </>
           )}
@@ -623,9 +619,9 @@ async function installPwa() {
         <div className="hr" />
 
         {/* Status + Meta */}
-        {fileName && (
+        {(fileName || status.kind !== "idle") && (
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="badge">קובץ: <strong style={{ color: "var(--text)" }}>{fileName}</strong></span>
+            {fileName && <span className="badge">קובץ: <strong style={{ color: "var(--text)" }}>{fileName}</strong></span>}
             <span className={"badge " + (status.kind === "ok" ? "ok" : status.kind === "error" ? "err" : "")}>
               {status.kind === "loading" ? "⏳ " : status.kind === "ok" ? "✅ " : status.kind === "error" ? "⚠️ " : "ℹ️ "}
               {status.msg || "מוכן."}
@@ -667,9 +663,11 @@ async function installPwa() {
             חודש:
             <select className="select" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)}>
               <option value="all">הכל</option>
-              {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0")).map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              {Array.from({ length: 12 }, (_, i) => {
+                const m = String(i + 1).padStart(2, "0");
+                const heNames = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
+                return <option key={m} value={m}>{m} — {heNames[i]}</option>;
+              })}
             </select>
           </label>
 
@@ -693,7 +691,9 @@ async function installPwa() {
 
           {filteredResults.length === 0 ? (
             <p className="small" style={{ marginTop: 12 }}>
-              העלה קובץ כדי לראות תוצאות. לאחר מכן תוכל לחפש/לסנן/לייצא ל-CSV או Excel.
+              {records.length === 0
+                ? "העלה קובץ כדי לראות תוצאות. לאחר מכן תוכל לחפש/לסנן/לייצא ל-CSV או Excel."
+                : "אין תוצאות לפי הסינון הנוכחי — נסה לשנות חיפוש, שנה, חודש, או מצב ייחודיות."}
             </p>
           ) : (
             <div className="tableWrap" style={{ marginTop: 12 }}>
